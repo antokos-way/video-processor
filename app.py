@@ -23,44 +23,40 @@ def download_video():
         
         print(f"Downloading video and audio: {video_url}")
         
-        # Скачиваем ВИДЕО с параметрами обхода блокировки
+        # Базовые параметры с cookies
+        base_params = [
+            '--cookies', '/app/cookies.txt',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+            '--referer', 'https://www.youtube.com/',
+            '--no-check-certificate',
+            '--extractor-args', 'youtube:player_client=android,web',
+            '--sleep-requests', '1',
+            '-R', '3',
+            '-w'
+        ]
+        
+        # Скачиваем ВИДЕО
         video_filename = f"{folder}/video.%(ext)s"
         video_cmd = [
             'yt-dlp', video_url, 
             '-o', video_filename,
             '-f', 'best[height<=1080]/best[height<=720]/best',
-            '-R', '3',
-            '-w',
-            '--no-audio',
-            # Параметры обхода блокировки YouTube
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-            '--referer', 'https://www.youtube.com/',
-            '--no-check-certificate',
-            '--extractor-args', 'youtube:player_client=web,web_embed',
-            '--sleep-requests', '1'
-        ]
+            '--no-audio'
+        ] + base_params
         
         print(f"Running video command: {' '.join(video_cmd)}")
         video_result = subprocess.run(video_cmd, capture_output=True, text=True, timeout=300)
         
-        # Скачиваем АУДИО с теми же параметрами обхода
+        # Скачиваем АУДИО
         audio_filename = f"{folder}/audio.%(ext)s"
         audio_cmd = [
             'yt-dlp', video_url,
             '-o', audio_filename,
             '-f', 'bestaudio/best',
-            '-R', '3',
-            '-w',
             '--extract-audio',
             '--audio-format', 'mp3',
-            '--audio-quality', '0',
-            # Те же параметры обхода
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-            '--referer', 'https://www.youtube.com/',
-            '--no-check-certificate',
-            '--extractor-args', 'youtube:player_client=web,web_embed',
-            '--sleep-requests', '1'
-        ]
+            '--audio-quality', '0'
+        ] + base_params
         
         print(f"Running audio command: {' '.join(audio_cmd)}")
         audio_result = subprocess.run(audio_cmd, capture_output=True, text=True, timeout=300)
@@ -215,21 +211,25 @@ def download_and_screenshots():
         folder = str(uuid.uuid4())
         os.makedirs(folder)
         
-        # Скачиваем видео для скриншотов (с аудио для полноты) с обходом блокировки
+        # Базовые параметры с cookies
+        base_params = [
+            '--cookies', '/app/cookies.txt',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+            '--referer', 'https://www.youtube.com/',
+            '--no-check-certificate',
+            '--extractor-args', 'youtube:player_client=android,web',
+            '--sleep-requests', '1',
+            '-R', '3',
+            '-w'
+        ]
+        
+        # Скачиваем видео для скриншотов
         video_filename = f"{folder}/video_full.%(ext)s"
         cmd = [
             'yt-dlp', video_url, 
             '-o', video_filename,
-            '-f', 'best[height<=1080]/best[height<=720]/best',
-            '-R', '3',
-            '-w',
-            # Параметры обхода блокировки
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-            '--referer', 'https://www.youtube.com/',
-            '--no-check-certificate',
-            '--extractor-args', 'youtube:player_client=web,web_embed',
-            '--sleep-requests', '1'
-        ]
+            '-f', 'best[height<=1080]/best[height<=720]/best'
+        ] + base_params
         
         print(f"Downloading full video: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
