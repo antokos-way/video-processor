@@ -21,36 +21,110 @@ def download_video():
         folder = str(uuid.uuid4())
         os.makedirs(folder)
         
-        # Скачиваем видео
-        filename = f"{folder}/video.%(ext)s"
-        cmd = ['yt-dlp', video_url, '-o', filename, '-f', 'best[height<=720]']
-        subprocess.run(cmd, check=True)
+        print(f"Downloading video and audio: {video_url}")
         
-        # Находим скачанный файл
-        files = [f for f in os.listdir(folder) if f.endswith(('.mp4', '.mkv', '.webm'))]
-        if not files:
-            return jsonify({'error': 'Видео не скачалось'}), 400
+        # Скачиваем ВИДЕО (1080p -> 720p -> лучшее доступное)
+        video_filename = f"{folder}/video.%(ext)s"
+        video_cmd = [
+            'yt-dlp', video_url, 
+            '-o', video_filename,
+            '-f', 'best[height<=1080]/best[height<=720]/best',  # Приоритет: 1080p -> 720p -> лучшее
+            '-R', '3',  # 3 попытки
+            '-w',       # не перезаписывать
+            '--no-audio'  # только видео без аудио
+        ]
         
-        video_path = f'{folder}/{files[0]}'
+        print(f"Running video command: {' '.join(video_cmd)}")
+        video_result = subprocess.run(video_cmd, capture_output=True, text=True, timeout=300)
         
-        # Загружаем в Cloud Storage
+        # Скачиваем АУДИО (лучшее качество)
+        audio_filename = f"{folder}/audio.%(ext)s"
+        audio_cmd = [
+            'yt-dlp', video_url,
+            '-o', audio_filename,
+            '-f', 'bestaudio/best',  # Лучшее аудио
+            '-R', '3',  # 3 попытки
+            '-w',       # не перезаписывать
+            '--extract-audio',  # извлечь аудио
+            '--audio-format', 'mp3',  # конвертировать в mp3
+            '--audio-quality', '0'   # лучшее качество
+        ]
+        
+        print(f"Running audio command: {' '.join(audio_cmd)}")
+        audio_result = subprocess.run(audio_cmd, capture_output=True, text=True, timeout=300)
+        
+        # Проверяем результаты
+        print(f"Video result: {video_result.returncode}")
+        print(f"Audio result: {audio_result.returncode}")
+        
+        if video_result.returncode != 0:
+            print(f"Video stderr: {video_result.stderr}")
+            return jsonify({
+                'error': 'Video download failed',
+                'video_stderr': video_result.stderr[:500],
+                'video_stdout': video_result.stdout[:500]
+            }), 500
+            
+        if audio_result.returncode != 0:
+            print(f"Audio stderr: {audio_result.stderr}")
+            return jsonify({
+                'error': 'Audio download failed', 
+                'audio_stderr': audio_result.stderr[:500],
+                'audio_stdout': audio_result.stdout[:500]
+            }), 500
+        
+        # Проверяем загруженные файлы
+        all_files = os.listdir(folder)
+        video_files = [f for f in all_files if f.startswith('video.') and f.endswith(('.mp4', '.mkv', '.webm'))]
+        audio_files = [f for f in all_files if f.startswith('audio.') and f.endswith(('.mp3', '.m4a', '.aac'))]
+        
+        print(f"All files: {all_files}")
+        print(f"Video files: {video_files}")
+        print(f"Audio files: {audio_files}")
+        
+        if not video_files:
+            return jsonify({
+                'error': 'Video file not found',
+                'all_files': all_files
+            }), 400
+            
+        if not audio_files:
+            return jsonify({
+                'error': 'Audio file not found',
+                'all_files': all_files
+            }), 400
+        
+        # Загружаем оба файла в Cloud Storage
         storage_client = storage.Client()
         bucket = storage_client.bucket(BUCKET)
-        blob_name = f"{folder}/{files[0]}"
-        blob = bucket.blob(blob_name)
-        blob.upload_from_filename(video_path)
         
-        # Простой публичный URL (без подписи)
-        public_url = f"https://storage.googleapis.com/{BUCKET}/{blob_name}"
+        # Загружаем видео
+        video_path = f'{folder}/{video_files[0]}'
+        video_blob_name = f"{folder}/{video_files[0]}"
+        video_blob = bucket.blob(video_blob_name)
+        video_blob.upload_from_filename(video_path)
+        video_url_result = f"https://storage.googleapis.com/{BUCKET}/{video_blob_name}"
+        
+        # Загружаем аудио
+        audio_path = f'{folder}/{audio_files[0]}'
+        audio_blob_name = f"{folder}/{audio_files[0]}"
+        audio_blob = bucket.blob(audio_blob_name)
+        audio_blob.upload_from_filename(audio_path)
+        audio_url_result = f"https://storage.googleapis.com/{BUCKET}/{audio_blob_name}"
         
         return jsonify({
             'success': True,
-            'video_url': public_url,
-            'filename': files[0],
+            'video_url': video_url_result,
+            'audio_url': audio_url_result,
+            'video_filename': video_files[0],
+            'audio_filename': audio_files[0],
             'folder': folder
         })
         
+    except subprocess.TimeoutExpired:
+        return jsonify({'error': 'Download timeout (5 minutes)'}), 500
     except Exception as e:
+        print(f"Exception: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/screenshots', methods=['POST'])
@@ -60,15 +134,13 @@ def make_screenshots():
         
     try:
         data = request.json
-        video_url = data['video_url']
+        video_url = data['video_url']  # Используем video_url из предыдущего запроса
         count = data.get('count', 5)
         
         folder = str(uuid.uuid4())
         os.makedirs(folder)
         
         # Извлекаем blob_name из URL
-        # URL: https://storage.googleapis.com/bucket/path/file.mp4
-        # Нужно получить: path/file.mp4
         url_parts = video_url.split(f"/{BUCKET}/")
         if len(url_parts) < 2:
             return jsonify({'error': 'Invalid video URL format'}), 400
@@ -119,7 +191,7 @@ def make_screenshots():
 
 @app.route('/download_and_screenshots', methods=['POST'])
 def download_and_screenshots():
-    """Скачивает видео и сразу делает скриншоты за один запрос"""
+    """Скачивает видео+аудио и сразу делает скриншоты за один запрос"""
     if not BUCKET:
         return jsonify({'error': 'BUCKET not configured'}), 500
         
@@ -131,34 +203,53 @@ def download_and_screenshots():
         folder = str(uuid.uuid4())
         os.makedirs(folder)
         
-        # Скачиваем видео
-        filename = f"{folder}/video.%(ext)s"
-        cmd = ['yt-dlp', video_url, '-o', filename, '-f', 'best[height<=720]']
-        subprocess.run(cmd, check=True)
+        # Скачиваем видео для скриншотов (с аудио для полноты)
+        video_filename = f"{folder}/video_full.%(ext)s"
+        cmd = [
+            'yt-dlp', video_url, 
+            '-o', video_filename,
+            '-f', 'best[height<=1080]/best[height<=720]/best',
+            '-R', '3',
+            '-w'
+        ]
+        
+        print(f"Downloading full video: {' '.join(cmd)}")
+        result = subprocess.run(cmd, check=True)
         
         # Находим скачанный файл
-        files = [f for f in os.listdir(folder) if f.endswith(('.mp4', '.mkv', '.webm'))]
+        files = [f for f in os.listdir(folder) if f.startswith('video_full.')]
         if not files:
-            return jsonify({'error': 'Видео не скачалось'}), 400
+            return jsonify({'error': 'Video not downloaded'}), 400
         
         video_path = f'{folder}/{files[0]}'
         
-        # Сразу делаем скриншоты из локального файла
+        # Делаем скриншоты из локального файла
         cmd = ['ffmpeg', '-i', video_path, '-vf', 'fps=1/10', '-vframes', str(count), f'{folder}/shot_%03d.jpg']
         result = subprocess.run(cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
             return jsonify({'error': f'ffmpeg failed: {result.stderr}'}), 500
         
-        # Загружаем ВСЁ в Cloud Storage
+        # Извлекаем только аудио из этого же файла
+        audio_path = f'{folder}/audio.mp3'
+        audio_cmd = ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'mp3', '-ab', '192k', audio_path]
+        subprocess.run(audio_cmd, check=True)
+        
+        # Загружаем всё в Cloud Storage
         storage_client = storage.Client()
         bucket = storage_client.bucket(BUCKET)
         
         # Загружаем видео
-        blob_name = f"{folder}/{files[0]}"
-        blob = bucket.blob(blob_name)
-        blob.upload_from_filename(video_path)
-        video_public_url = f"https://storage.googleapis.com/{BUCKET}/{blob_name}"
+        video_blob_name = f"{folder}/{files[0]}"
+        video_blob = bucket.blob(video_blob_name)
+        video_blob.upload_from_filename(video_path)
+        video_public_url = f"https://storage.googleapis.com/{BUCKET}/{video_blob_name}"
+        
+        # Загружаем аудио
+        audio_blob_name = f"{folder}/audio.mp3"
+        audio_blob = bucket.blob(audio_blob_name)
+        audio_blob.upload_from_filename(audio_path)
+        audio_public_url = f"https://storage.googleapis.com/{BUCKET}/{audio_blob_name}"
         
         # Загружаем скриншоты
         screenshot_urls = []
@@ -174,7 +265,10 @@ def download_and_screenshots():
         return jsonify({
             'success': True,
             'video_url': video_public_url,
+            'audio_url': audio_public_url,
             'screenshots': screenshot_urls,
+            'video_filename': files[0],
+            'audio_filename': 'audio.mp3',
             'count': len(screenshot_urls)
         })
         
