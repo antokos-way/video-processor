@@ -26,6 +26,7 @@ def health_check():
 
 @app.route('/download', methods=['POST'])
 def download_video():
+    """Скачивание через YouTube URL с cookies"""
     if not BUCKET:
         return jsonify({'error': 'BUCKET not configured'}), 500
     
@@ -59,7 +60,7 @@ def download_video():
         debug_result = subprocess.run(debug_cmd, capture_output=True, text=True, timeout=60)
         if debug_result.returncode == 0:
             print("Available formats:")
-            print(debug_result.stdout[:1500])  # Первые 1500 символов
+            print(debug_result.stdout[:1500])
         else:
             print(f"Format check failed: {debug_result.stderr[:500]}")
         
@@ -82,7 +83,7 @@ def download_video():
             '-f', 'bestaudio',
             '--extract-audio',
             '--audio-format', 'mp3',
-            '--audio-quality', '0'  # Лучшее качество
+            '--audio-quality', '0'
         ] + base_params
         
         print(f"Running audio command: {' '.join(audio_cmd)}")
@@ -160,6 +161,116 @@ def download_video():
         
     except subprocess.TimeoutExpired:
         return jsonify({'error': 'Download timeout (10 minutes)'}), 500
+    except Exception as e:
+        print(f"Exception: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/download-direct', methods=['POST'])
+def download_direct_link():
+    """Скачивание прямых ссылок (redirector.googlevideo.com) БЕЗ cookies"""
+    if not BUCKET:
+        return jsonify({'error': 'BUCKET not configured'}), 500
+    
+    try:
+        data = request.json
+        video_url = data['url']  # Прямая ссылка от API
+        folder = str(uuid.uuid4())
+        os.makedirs(folder)
+        
+        print(f"Downloading direct link: {video_url[:100]}...")
+        
+        # Проверяем, что это прямая ссылка
+        if not video_url.startswith('http'):
+            return jsonify({'error': 'Invalid URL format'}), 400
+        
+        output_file = f'{folder}/video.mp4'
+        
+        # Вариант 1: Пробуем через yt-dlp (БЕЗ cookies)
+        cmd = [
+            'yt-dlp',
+            video_url,
+            '-o', output_file,
+            '--no-check-certificate',
+            '-N', '4',  # 4 одновременных соединения
+            '--no-warnings'
+        ]
+        
+        print(f"Running yt-dlp command...")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        
+        if result.returncode != 0:
+            # Fallback: Пробуем через requests
+            print("yt-dlp failed, trying direct download via requests...")
+            response = requests.get(video_url, stream=True, timeout=300)
+            
+            if response.status_code != 200:
+                return jsonify({
+                    'error': 'Download failed',
+                    'status_code': response.status_code,
+                    'yt_dlp_error': result.stderr[:300]
+                }), 500
+            
+            # Скачиваем потоком
+            with open(output_file, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            print("Downloaded via requests successfully")
+        else:
+            print("Downloaded via yt-dlp successfully")
+        
+        # Проверяем размер файла
+        if not os.path.exists(output_file):
+            return jsonify({'error': 'Video file was not created'}), 500
+        
+        file_size = os.path.getsize(output_file)
+        if file_size < 1024:  # Меньше 1KB - ошибка
+            return jsonify({'error': f'Downloaded file is too small: {file_size} bytes'}), 500
+        
+        print(f"File size: {file_size / 1024 / 1024:.2f} MB")
+        
+        # Загружаем в Cloud Storage
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(BUCKET)
+        
+        video_blob_name = f"{folder}/video.mp4"
+        video_blob = bucket.blob(video_blob_name)
+        video_blob.upload_from_filename(output_file)
+        
+        video_url_result = f"https://storage.googleapis.com/{BUCKET}/{video_blob_name}"
+        
+        # Извлекаем аудио через ffmpeg
+        audio_file = f'{folder}/audio.mp3'
+        audio_cmd = ['ffmpeg', '-i', output_file, '-vn', '-acodec', 'mp3', '-ab', '192k', audio_file]
+        audio_result = subprocess.run(audio_cmd, capture_output=True, text=True)
+        
+        audio_url_result = None
+        if audio_result.returncode == 0 and os.path.exists(audio_file):
+            audio_blob_name = f"{folder}/audio.mp3"
+            audio_blob = bucket.blob(audio_blob_name)
+            audio_blob.upload_from_filename(audio_file)
+            audio_url_result = f"https://storage.googleapis.com/{BUCKET}/{audio_blob_name}"
+            print("Audio extracted successfully")
+        else:
+            print(f"Audio extraction failed or no audio: {audio_result.stderr[:200]}")
+        
+        # Удаляем временные файлы
+        os.unlink(output_file)
+        if os.path.exists(audio_file):
+            os.unlink(audio_file)
+        os.rmdir(folder)
+        
+        return jsonify({
+            'success': True,
+            'video_url': video_url_result,
+            'audio_url': audio_url_result,
+            'video_filename': 'video.mp4',
+            'audio_filename': 'audio.mp3' if audio_url_result else None,
+            'size_mb': round(file_size / 1024 / 1024, 2)
+        })
+        
+    except subprocess.TimeoutExpired:
+        return jsonify({'error': 'Download timeout (5 minutes)'}), 500
     except Exception as e:
         print(f"Exception: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -252,7 +363,7 @@ def download_and_screenshots():
             '--ignore-errors'
         ]
         
-        # Скачиваем видео для скриншотов (с аудио для полноты) с поддержкой 60fps
+        # Скачиваем видео для скриншотов
         video_filename = f"{folder}/video_full.%(ext)s"
         cmd = [
             'yt-dlp', video_url, 
@@ -277,14 +388,14 @@ def download_and_screenshots():
         
         video_path = f'{folder}/{files[0]}'
         
-        # Делаем скриншоты из локального файла
+        # Делаем скриншоты
         cmd = ['ffmpeg', '-i', video_path, '-vf', 'fps=1/10', '-vframes', str(count), f'{folder}/shot_%03d.jpg']
         result = subprocess.run(cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
             return jsonify({'error': f'ffmpeg failed: {result.stderr}'}), 500
         
-        # Извлекаем только аудио из этого же файла
+        # Извлекаем аудио
         audio_path = f'{folder}/audio.mp3'
         audio_cmd = ['ffmpeg', '-i', video_path, '-vn', '-acodec', 'mp3', '-ab', '192k', audio_path]
         subprocess.run(audio_cmd, check=True)
