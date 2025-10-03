@@ -1,10 +1,13 @@
 from flask import Flask, request, jsonify
 import os, subprocess, uuid
 from google.cloud import storage
-from datetime import datetime, timedelta
 
 app = Flask(__name__)
 BUCKET = os.environ.get('BUCKET')
+
+@app.route('/', methods=['GET'])
+def health_check():
+    return jsonify({'status': 'ok', 'bucket': BUCKET})
 
 @app.route('/download', methods=['POST'])
 def download_video():
@@ -36,15 +39,16 @@ def download_video():
         blob = bucket.blob(blob_name)
         blob.upload_from_filename(video_path)
         
-        # Вместо make_public() используем signed URL
-        expiration = datetime.utcnow() + timedelta(hours=1)
-        signed_url = blob.generate_signed_url(expiration=expiration)
+        # Простой публичный URL (без подписи)
+        public_url = f"https://storage.googleapis.com/{BUCKET}/{blob_name}"
         
         return jsonify({
             'success': True,
-            'video_url': signed_url,
-            'filename': files[0]
+            'video_url': public_url,
+            'filename': files[0],
+            'folder': folder
         })
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -74,18 +78,18 @@ def make_screenshots():
         bucket = storage_client.bucket(BUCKET)
         screenshot_urls = []
         
-        expiration = datetime.utcnow() + timedelta(hours=1)
-        
         for i in range(1, count + 1):
             shot_file = f'{folder}/shot_{i:03d}.jpg'
             if os.path.exists(shot_file):
-                blob = bucket.blob(f"{folder}/shot_{i:03d}.jpg")
+                blob_name = f"{folder}/shot_{i:03d}.jpg"
+                blob = bucket.blob(blob_name)
                 blob.upload_from_filename(shot_file)
-                # Используем signed URL вместо make_public()
-                signed_url = blob.generate_signed_url(expiration=expiration)
-                screenshot_urls.append(signed_url)
+                # Простой публичный URL
+                public_url = f"https://storage.googleapis.com/{BUCKET}/{blob_name}"
+                screenshot_urls.append(public_url)
         
         return jsonify({'screenshots': screenshot_urls})
+        
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
