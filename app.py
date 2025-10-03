@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import os, subprocess, uuid
+import requests
 from google.cloud import storage
 
 app = Flask(__name__)
@@ -65,13 +66,29 @@ def make_screenshots():
         folder = str(uuid.uuid4())
         os.makedirs(folder)
         
-        # Скачиваем видео из Storage
+        # Скачиваем видео из Storage через requests (вместо wget)
         video_file = f"{folder}/input.mp4"
-        subprocess.run(['wget', '-O', video_file, video_url], check=True)
+        print(f"Downloading video from: {video_url}")
         
-        # Делаем скриншоты
-        cmd = ['ffmpeg', '-i', video_file, '-vf', 'fps=1/60', '-vframes', str(count), f'{folder}/shot_%03d.jpg']
-        subprocess.run(cmd, check=True)
+        response = requests.get(video_url, stream=True)
+        response.raise_for_status()
+        
+        with open(video_file, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        print(f"Video downloaded to: {video_file}")
+        
+        # Проверяем, что файл существует
+        if not os.path.exists(video_file):
+            return jsonify({'error': 'Video file not downloaded'}), 500
+        
+        # Делаем скриншоты каждые 10 секунд
+        cmd = ['ffmpeg', '-i', video_file, '-vf', 'fps=1/10', '-vframes', str(count), f'{folder}/shot_%03d.jpg']
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            return jsonify({'error': f'ffmpeg failed: {result.stderr}'}), 500
         
         # Загружаем скриншоты в Storage
         storage_client = storage.Client()
@@ -84,11 +101,14 @@ def make_screenshots():
                 blob_name = f"{folder}/shot_{i:03d}.jpg"
                 blob = bucket.blob(blob_name)
                 blob.upload_from_filename(shot_file)
-                # Простой публичный URL
                 public_url = f"https://storage.googleapis.com/{BUCKET}/{blob_name}"
                 screenshot_urls.append(public_url)
         
-        return jsonify({'screenshots': screenshot_urls})
+        return jsonify({
+            'success': True,
+            'screenshots': screenshot_urls,
+            'count': len(screenshot_urls)
+        })
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
