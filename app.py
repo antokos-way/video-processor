@@ -23,31 +23,43 @@ def download_video():
         
         print(f"Downloading video and audio: {video_url}")
         
-        # Скачиваем ВИДЕО (1080p -> 720p -> лучшее доступное)
+        # Скачиваем ВИДЕО с параметрами обхода блокировки
         video_filename = f"{folder}/video.%(ext)s"
         video_cmd = [
             'yt-dlp', video_url, 
             '-o', video_filename,
-            '-f', 'best[height<=1080]/best[height<=720]/best',  # Приоритет: 1080p -> 720p -> лучшее
-            '-R', '3',  # 3 попытки
-            '-w',       # не перезаписывать
-            '--no-audio'  # только видео без аудио
+            '-f', 'best[height<=1080]/best[height<=720]/best',
+            '-R', '3',
+            '-w',
+            '--no-audio',
+            # Параметры обхода блокировки YouTube
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+            '--referer', 'https://www.youtube.com/',
+            '--no-check-certificate',
+            '--extractor-args', 'youtube:player_client=web,web_embed',
+            '--sleep-requests', '1'
         ]
         
         print(f"Running video command: {' '.join(video_cmd)}")
         video_result = subprocess.run(video_cmd, capture_output=True, text=True, timeout=300)
         
-        # Скачиваем АУДИО (лучшее качество)
+        # Скачиваем АУДИО с теми же параметрами обхода
         audio_filename = f"{folder}/audio.%(ext)s"
         audio_cmd = [
             'yt-dlp', video_url,
             '-o', audio_filename,
-            '-f', 'bestaudio/best',  # Лучшее аудио
-            '-R', '3',  # 3 попытки
-            '-w',       # не перезаписывать
-            '--extract-audio',  # извлечь аудио
-            '--audio-format', 'mp3',  # конвертировать в mp3
-            '--audio-quality', '0'   # лучшее качество
+            '-f', 'bestaudio/best',
+            '-R', '3',
+            '-w',
+            '--extract-audio',
+            '--audio-format', 'mp3',
+            '--audio-quality', '0',
+            # Те же параметры обхода
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+            '--referer', 'https://www.youtube.com/',
+            '--no-check-certificate',
+            '--extractor-args', 'youtube:player_client=web,web_embed',
+            '--sleep-requests', '1'
         ]
         
         print(f"Running audio command: {' '.join(audio_cmd)}")
@@ -134,7 +146,7 @@ def make_screenshots():
         
     try:
         data = request.json
-        video_url = data['video_url']  # Используем video_url из предыдущего запроса
+        video_url = data['video_url']
         count = data.get('count', 5)
         
         folder = str(uuid.uuid4())
@@ -203,23 +215,36 @@ def download_and_screenshots():
         folder = str(uuid.uuid4())
         os.makedirs(folder)
         
-        # Скачиваем видео для скриншотов (с аудио для полноты)
+        # Скачиваем видео для скриншотов (с аудио для полноты) с обходом блокировки
         video_filename = f"{folder}/video_full.%(ext)s"
         cmd = [
             'yt-dlp', video_url, 
             '-o', video_filename,
             '-f', 'best[height<=1080]/best[height<=720]/best',
             '-R', '3',
-            '-w'
+            '-w',
+            # Параметры обхода блокировки
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+            '--referer', 'https://www.youtube.com/',
+            '--no-check-certificate',
+            '--extractor-args', 'youtube:player_client=web,web_embed',
+            '--sleep-requests', '1'
         ]
         
         print(f"Downloading full video: {' '.join(cmd)}")
-        result = subprocess.run(cmd, check=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        
+        if result.returncode != 0:
+            return jsonify({
+                'error': 'Video download failed',
+                'stderr': result.stderr[:500],
+                'stdout': result.stdout[:500]
+            }), 500
         
         # Находим скачанный файл
         files = [f for f in os.listdir(folder) if f.startswith('video_full.')]
         if not files:
-            return jsonify({'error': 'Video not downloaded'}), 400
+            return jsonify({'error': 'Video not downloaded', 'files': os.listdir(folder)}), 400
         
         video_path = f'{folder}/{files[0]}'
         
@@ -272,6 +297,8 @@ def download_and_screenshots():
             'count': len(screenshot_urls)
         })
         
+    except subprocess.TimeoutExpired:
+        return jsonify({'error': 'Download timeout (5 minutes)'}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
