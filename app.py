@@ -58,7 +58,7 @@ def download_video():
         video_cmd = [
             'yt-dlp', video_url, 
             '-o', video_filename,
-            '-f', 'best[height<=720]/best',
+            '-f', 'best[height<=1080]/best[height<=720]/best',  # 1080p → 720p → любое
             '--no-audio'
         ] + base_params
         
@@ -140,3 +140,4 @@ def download_video():
 if __name__ == '__main__':
     print("Starting Flask server on port 8080...")
     app.run(host='0.0.0.0', port=8080)
+
