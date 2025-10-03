@@ -1,58 +1,3 @@
-from flask import Flask, request, jsonify
-import os, subprocess, uuid
-import requests
-from google.cloud import storage
-
-app = Flask(__name__)
-BUCKET = os.environ.get('BUCKET')
-
-@app.route('/', methods=['GET'])
-def health_check():
-    return jsonify({'status': 'ok', 'bucket': BUCKET})
-
-@app.route('/download', methods=['POST'])
-def download_video():
-    if not BUCKET:
-        return jsonify({'error': 'BUCKET not configured'}), 500
-        
-    try:
-        data = request.json
-        video_url = data['url']
-        folder = str(uuid.uuid4())
-        os.makedirs(folder)
-        
-        # Скачиваем видео
-        filename = f"{folder}/video.%(ext)s"
-        cmd = ['yt-dlp', video_url, '-o', filename, '-f', 'best[height<=720]']
-        subprocess.run(cmd, check=True)
-        
-        # Находим скачанный файл
-        files = [f for f in os.listdir(folder) if f.endswith(('.mp4', '.mkv', '.webm'))]
-        if not files:
-            return jsonify({'error': 'Видео не скачалось'}), 400
-        
-        video_path = f'{folder}/{files[0]}'
-        
-        # Загружаем в Cloud Storage
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(BUCKET)
-        blob_name = f"{folder}/{files[0]}"
-        blob = bucket.blob(blob_name)
-        blob.upload_from_filename(video_path)
-        
-        # Простой публичный URL (без подписи)
-        public_url = f"https://storage.googleapis.com/{BUCKET}/{blob_name}"
-        
-        return jsonify({
-            'success': True,
-            'video_url': public_url,
-            'filename': files[0],
-            'folder': folder
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/screenshots', methods=['POST'])
 def make_screenshots():
     if not BUCKET:
@@ -62,22 +7,29 @@ def make_screenshots():
         data = request.json
         video_url = data['video_url']
         count = data.get('count', 5)
+        folder_from_url = data.get('folder')  # Получаем folder из предыдущего запроса
         
         folder = str(uuid.uuid4())
         os.makedirs(folder)
         
-        # Скачиваем видео из Storage через requests (вместо wget)
+        # Извлекаем blob_name из URL
+        # URL: https://storage.googleapis.com/bucket/path/file.mp4
+        # Нужно получить: path/file.mp4
+        url_parts = video_url.split(f"/{BUCKET}/")
+        if len(url_parts) < 2:
+            return jsonify({'error': 'Invalid video URL format'}), 400
+        
+        blob_name = url_parts[1]
+        
+        # Скачиваем видео через Cloud Storage API
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(BUCKET)
+        blob = bucket.blob(blob_name)
+        
         video_file = f"{folder}/input.mp4"
-        print(f"Downloading video from: {video_url}")
+        blob.download_to_filename(video_file)
         
-        response = requests.get(video_url, stream=True)
-        response.raise_for_status()
-        
-        with open(video_file, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        print(f"Video downloaded to: {video_file}")
+        print(f"Video downloaded from Cloud Storage to: {video_file}")
         
         # Проверяем, что файл существует
         if not os.path.exists(video_file):
@@ -91,17 +43,15 @@ def make_screenshots():
             return jsonify({'error': f'ffmpeg failed: {result.stderr}'}), 500
         
         # Загружаем скриншоты в Storage
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(BUCKET)
         screenshot_urls = []
         
         for i in range(1, count + 1):
             shot_file = f'{folder}/shot_{i:03d}.jpg'
             if os.path.exists(shot_file):
-                blob_name = f"{folder}/shot_{i:03d}.jpg"
-                blob = bucket.blob(blob_name)
-                blob.upload_from_filename(shot_file)
-                public_url = f"https://storage.googleapis.com/{BUCKET}/{blob_name}"
+                blob_name_shot = f"{folder}/shot_{i:03d}.jpg"
+                blob_shot = bucket.blob(blob_name_shot)
+                blob_shot.upload_from_filename(shot_file)
+                public_url = f"https://storage.googleapis.com/{BUCKET}/{blob_name_shot}"
                 screenshot_urls.append(public_url)
         
         return jsonify({
@@ -112,6 +62,3 @@ def make_screenshots():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
