@@ -23,13 +23,13 @@ def download_video():
         
         print(f"Downloading video and audio: {video_url}")
         
-        # Базовые параметры с cookies
+        # Исправленные параметры с cookies (только web client)
         base_params = [
             '--cookies', '/app/cookies.txt',
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
             '--referer', 'https://www.youtube.com/',
             '--no-check-certificate',
-            '--extractor-args', 'youtube:player_client=android,web',
+            '--extractor-args', 'youtube:player_client=web',  # ТОЛЬКО WEB CLIENT
             '--sleep-requests', '1',
             '-R', '3',
             '-w'
@@ -211,13 +211,13 @@ def download_and_screenshots():
         folder = str(uuid.uuid4())
         os.makedirs(folder)
         
-        # Базовые параметры с cookies
+        # Исправленные параметры с cookies (только web client)
         base_params = [
             '--cookies', '/app/cookies.txt',
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
             '--referer', 'https://www.youtube.com/',
             '--no-check-certificate',
-            '--extractor-args', 'youtube:player_client=android,web',
+            '--extractor-args', 'youtube:player_client=web',  # ТОЛЬКО WEB CLIENT
             '--sleep-requests', '1',
             '-R', '3',
             '-w'
