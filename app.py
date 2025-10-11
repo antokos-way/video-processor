@@ -54,52 +54,12 @@ def health_check():
 
 @app.route('/download-segments', methods=['POST'])
 def download_video_segments():
-    """
-    Скачивание видео сегментами (потоково) + полное аудио
-    
-    Request body (варианты):
-    
-    1. Все сегменты подряд:
-    {
-        "url": "https://youtube.com/watch?v=...",
-        "segment_duration": 600,  // Длительность каждого сегмента в секундах (10 минут)
-        "max_segments": null      // null = все сегменты
-    }
-    
-    2. Ограниченное количество сегментов:
-    {
-        "url": "https://youtube.com/watch?v=...",
-        "segment_duration": 600,
-        "max_segments": 3         // Первые 3 сегмента
-    }
-    
-    3. Сегменты с интервалом (каждые X минут):
-    {
-        "url": "https://youtube.com/watch?v=...",
-        "segment_duration": 600,      // Длительность каждого сегмента
-        "max_segments": 5,            // Количество сегментов для скачивания
-        "segment_interval": 1800      // Скачивать каждые 30 минут (1800 секунд)
-    }
-    
-    Примеры:
-    - segment_duration=600, segment_interval=1800: скачать 10-минутные сегменты на позициях 0, 30, 60, 90... минут
-    - segment_duration=300, segment_interval=600: скачать 5-минутные сегменты каждые 10 минут
-    
-    4. Указать конкретные временные метки:
-    {
-        "url": "https://youtube.com/watch?v=...",
-        "segments": [
-            {"start": 0, "duration": 600},       // 0-10 минут
-            {"start": 1800, "duration": 600},    // 30-40 минут
-            {"start": 3600, "duration": 600}     // 60-70 минут
-        ]
-    }
-    """
+    """Скачивание видео сегментами (РЕАЛЬНАЯ нарезка)"""
     if not BUCKET:
         return jsonify({'error': 'BUCKET not configured'}), 500
     
-    if not os.path.exists('/app/cookies.txt'):
-        return jsonify({'error': 'cookies.txt file not found'}), 500
+    if not COOKIES_PATH or not os.path.exists(COOKIES_PATH):
+        return jsonify({'error': 'Cookies not loaded'}), 500
     
     temp_dir = None
     
@@ -116,7 +76,7 @@ def download_video_segments():
         print(f"=== DOWNLOADING SEGMENTS: {video_url} ===")
         
         base_params = [
-            '--cookies', '/app/cookies.txt',
+            '--cookies', COOKIES_PATH,
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             '--referer', 'https://www.youtube.com/',
             '--no-check-certificate',
@@ -144,27 +104,18 @@ def download_video_segments():
         segments_to_download = []
         
         if 'segments' in data:
-            # Режим 4: Вручную указанные сегменты
-            print("Mode: Custom segments")
+            # Режим: Вручную указанные сегменты
             for seg in data['segments']:
                 start = seg['start']
                 duration = seg.get('duration', data.get('segment_duration', 600))
                 end = min(start + duration, total_duration)
-                segments_to_download.append({
-                    'start': start,
-                    'end': end,
-                    'duration': end - start
-                })
+                segments_to_download.append({'start': start, 'end': end, 'duration': end - start})
         
         elif 'segment_interval' in data:
-            # Режим 3: Сегменты с интервалом
+            # Режим: Сегменты с интервалом
             segment_duration = data.get('segment_duration', 600)
             segment_interval = data['segment_interval']
             max_segments = data.get('max_segments', None)
-            
-            print(f"Mode: Interval segments")
-            print(f"Segment duration: {segment_duration}s ({segment_duration / 60:.1f}min)")
-            print(f"Segment interval: {segment_interval}s ({segment_interval / 60:.1f}min)")
             
             current_pos = 0
             segment_count = 0
@@ -172,26 +123,16 @@ def download_video_segments():
             while current_pos < total_duration:
                 start = current_pos
                 end = min(start + segment_duration, total_duration)
-                
-                segments_to_download.append({
-                    'start': start,
-                    'end': end,
-                    'duration': end - start
-                })
+                segments_to_download.append({'start': start, 'end': end, 'duration': end - start})
                 
                 segment_count += 1
-                
-                # Проверяем лимит сегментов
                 if max_segments and segment_count >= max_segments:
                     break
                 
-                # Переходим к следующей позиции с интервалом
                 current_pos += segment_interval
-            
-            print(f"Will download {len(segments_to_download)} segments with interval {segment_interval}s")
         
         else:
-            # Режим 1-2: Последовательные сегменты
+            # Режим: Последовательные сегменты
             segment_duration = data.get('segment_duration', 600)
             max_segments = data.get('max_segments', None)
             
@@ -199,20 +140,13 @@ def download_video_segments():
             
             if max_segments and max_segments > 0:
                 num_segments = min(num_segments_total, max_segments)
-                print(f"Mode: Sequential segments (limited to {num_segments})")
             else:
                 num_segments = num_segments_total
-                print(f"Mode: Sequential segments (all {num_segments})")
             
             for i in range(num_segments):
                 start = i * segment_duration
                 end = min((i + 1) * segment_duration, total_duration)
-                
-                segments_to_download.append({
-                    'start': start,
-                    'end': end,
-                    'duration': end - start
-                })
+                segments_to_download.append({'start': start, 'end': end, 'duration': end - start})
         
         print(f"Total segments to download: {len(segments_to_download)}")
         
@@ -223,7 +157,7 @@ def download_video_segments():
         
         segment_urls = []
         
-        # ====== СКАЧИВАЕМ СЕГМЕНТЫ ВИДЕО (ПОТОКОВО) ======
+        # ====== СКАЧИВАЕМ СЕГМЕНТЫ С НАРЕЗКОЙ ======
         for idx, seg in enumerate(segments_to_download):
             start_time = seg['start']
             end_time = seg['end']
@@ -231,64 +165,52 @@ def download_video_segments():
             
             print(f"\n=== SEGMENT {idx + 1}/{len(segments_to_download)} ===")
             print(f"Time: {start_time}s - {end_time}s ({start_time / 60:.1f}min - {end_time / 60:.1f}min)")
-            print(f"Duration: {duration}s ({duration / 60:.1f}min)")
             
             log_memory_usage(f"BEFORE_SEGMENT_{idx}")
             
-            # Получаем прямую ссылку на видео
-            get_url_cmd = [
+            # Скачиваем НАРЕЗАННЫЙ сегмент через yt-dlp
+            segment_file = f'{temp_dir}/segment_{idx:03d}.mp4'
+            
+            # ВАЖНО: используем --download-sections для нарезки
+            segment_cmd = [
                 'yt-dlp', video_url,
-                '--get-url',
-                '-f', 'bestvideo[height<=720][fps<=60]/bestvideo[height<=720]/bestvideo[height<=480]'
+                '-o', segment_file,
+                '-f', 'bestvideo[height<=720][fps<=60]+bestaudio/best',
+                '--download-sections', f'*{start_time}-{end_time}',  # ← КЛЮЧЕВОЙ ПАРАМЕТР
+                '--force-keyframes-at-cuts',  # Обрезка на ключевых кадрах
+                '--merge-output-format', 'mp4',
+                '--no-part'
             ] + base_params
             
-            url_result = subprocess.run(get_url_cmd, capture_output=True, text=True, timeout=60)
+            print(f"Downloading segment {idx} with yt-dlp...")
+            print(f"Command: {' '.join(segment_cmd[:10])}...")
             
-            if url_result.returncode != 0:
-                print(f"Failed to get URL for segment {idx}: {url_result.stderr[:200]}")
-                continue
-            
-            direct_video_url = url_result.stdout.strip()
-            
-            # Определяем расширение
-            video_ext = 'webm'
-            if 'mime=video%2Fmp4' in direct_video_url or '&itag=136' in direct_video_url:
-                video_ext = 'mp4'
-            
-            segment_blob_name = f"{folder}/video_segment_{idx:03d}.{video_ext}"
-            segment_blob = bucket.blob(segment_blob_name)
-            
-            print(f"Streaming segment {idx} to Cloud Storage...")
-            
-            # ПОТОКОВАЯ ЗАГРУЗКА СЕГМЕНТА
-            response = requests.get(
-                direct_video_url,
-                stream=True,
-                timeout=900,
-                headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Accept': '*/*'
-                }
+            segment_result = subprocess.run(
+                segment_cmd,
+                capture_output=True,
+                text=True,
+                timeout=900
             )
             
-            if response.status_code != 200:
-                print(f"Failed to stream segment {idx}: HTTP {response.status_code}")
+            if segment_result.returncode != 0:
+                print(f"Segment {idx} failed: {segment_result.stderr[:300]}")
                 continue
             
-            # Скачиваем и загружаем потоком
-            downloaded_bytes = 0
+            if not os.path.exists(segment_file):
+                print(f"Segment {idx} file not found after download")
+                continue
             
-            with segment_blob.open('wb', chunk_size=1024*1024) as blob_writer:
-                for chunk in response.iter_content(chunk_size=1024*1024):
-                    if chunk:
-                        blob_writer.write(chunk)
-                        downloaded_bytes += len(chunk)
-                        
-                        if downloaded_bytes % (50 * 1024 * 1024) < 1024 * 1024:
-                            print(f"  Progress: {downloaded_bytes / 1024 / 1024:.1f} MB")
+            segment_size = os.path.getsize(segment_file)
+            segment_size_mb = segment_size / 1024 / 1024
             
-            segment_size_mb = downloaded_bytes / 1024 / 1024
-            print(f"Segment {idx} uploaded: {segment_size_mb:.2f} MB")
+            print(f"Segment {idx} downloaded: {segment_size_mb:.2f} MB")
+            
+            log_memory_usage(f"AFTER_DOWNLOAD_SEGMENT_{idx}")
+            
+            # Загружаем в Cloud Storage
+            segment_blob_name = f"{folder}/video_segment_{idx:03d}.mp4"
+            segment_blob = bucket.blob(segment_blob_name)
+            segment_blob.upload_from_filename(segment_file)
             
             segment_url = f"https://storage.googleapis.com/{BUCKET}/{segment_blob_name}"
             segment_urls.append({
@@ -300,16 +222,20 @@ def download_video_segments():
                 'end_time_formatted': f"{int(end_time // 60)}:{int(end_time % 60):02d}",
                 'url': segment_url,
                 'size_mb': round(segment_size_mb, 2),
-                'filename': f'video_segment_{idx:03d}.{video_ext}'
+                'filename': f'video_segment_{idx:03d}.mp4'
             })
             
-            log_memory_usage(f"AFTER_SEGMENT_{idx}")
+            # СРАЗУ удаляем сегмент из /tmp
+            os.unlink(segment_file)
+            print(f"Segment {idx} deleted from /tmp")
+            
+            log_memory_usage(f"AFTER_UPLOAD_SEGMENT_{idx}")
             
             gc.collect()
         
         log_memory_usage("ALL_SEGMENTS_DONE")
         
-        # ====== СКАЧИВАЕМ ПОЛНОЕ АУДИО (ПОТОКОВО) ======
+        # ====== СКАЧИВАЕМ ПОЛНОЕ АУДИО (потоково) ======
         print("\n=== DOWNLOADING FULL AUDIO ===")
         
         audio_url_cmd = [
@@ -327,9 +253,7 @@ def download_video_segments():
             direct_audio_url = audio_url_result.stdout.strip()
             
             audio_ext = 'm4a'
-            if 'mime=audio%2Fmp4' in direct_audio_url:
-                audio_ext = 'm4a'
-            elif 'mime=audio%2Fwebm' in direct_audio_url:
+            if 'mime=audio%2Fwebm' in direct_audio_url:
                 audio_ext = 'webm'
             
             audio_blob_name = f"{folder}/audio_full.{audio_ext}"
@@ -355,17 +279,10 @@ def download_video_segments():
                         if chunk:
                             audio_writer.write(chunk)
                             audio_downloaded_bytes += len(chunk)
-                            
-                            if audio_downloaded_bytes % (10 * 1024 * 1024) < 512 * 1024:
-                                print(f"  Audio progress: {audio_downloaded_bytes / 1024 / 1024:.1f} MB")
                 
                 audio_size_mb = audio_downloaded_bytes / 1024 / 1024
                 audio_url_full = f"https://storage.googleapis.com/{BUCKET}/{audio_blob_name}"
                 print(f"Full audio uploaded: {audio_size_mb:.2f} MB")
-            else:
-                print(f"Failed to download audio: HTTP {audio_response.status_code}")
-        else:
-            print(f"Failed to get audio URL: {audio_url_result.stderr[:200]}")
         
         log_memory_usage("AFTER_AUDIO")
         
@@ -401,8 +318,6 @@ def download_video_segments():
     finally:
         if temp_dir and os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
-            print(f"Cleaned up {temp_dir}")
-        
         gc.collect()
         log_memory_usage("CLEANUP")
 
